@@ -380,7 +380,20 @@ func main() {
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
+		
 	}
+
+	// --- FIX FOR HEROKU START ---
+	// 强制读取 Heroku 的 PORT 环境变量，覆盖配置文件里的设置
+	if portEnv := os.Getenv("PORT"); portEnv != "" {
+		var p int
+		if _, err := fmt.Sscanf(portEnv, "%d", &p); err == nil {
+			cfg.Port = p
+			cfg.Host = "0.0.0.0" // 必须绑定到 0.0.0.0
+			log.Infof("Heroku Environment Detected: Forced Port to %d", p)
+		}
+	}
+	// --- FIX FOR HEROKU END ---
 
 	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
