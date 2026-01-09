@@ -1,26 +1,27 @@
 #!/bin/sh
 
-# 1. 准备配置文件
-# 如果 config.yaml 不存在，从示例文件复制
+# 1. 准备基础配置文件
 if [ ! -f config.yaml ]; then
     echo "Creating config.yaml from example..."
     cp config.example.yaml config.yaml
 fi
 
-# 2. 强制修改端口 (关键步骤)
-# 使用正则表达式匹配以 "port:" 开头的行，强制替换为 Heroku 分配的 $PORT
-sed -i "s/^port:.*/port: $PORT/" config.yaml
+# 2. 修改端口和监听地址 (这是 Heroku 必须的)
+# 使用更宽松的正则，确保能替换成功
+sed -i "s/port: *[0-9]*/port: $PORT/" config.yaml
+sed -i 's/host: *".*"/host: "0.0.0.0"/' config.yaml
 
-# 3. 强制绑定所有网络接口 (host)
-# Heroku 要求监听 0.0.0.0，而不是 localhost
-sed -i 's/^host:.*/host: "0.0.0.0"/' config.yaml
+# 3. 【关键步骤】将配置文件复制到程序的默认读取路径
+# 程序很可能只读 ~/.cli-proxy-api/config.yaml，不读当前目录
+mkdir -p "$HOME/.cli-proxy-api"
+cp config.yaml "$HOME/.cli-proxy-api/config.yaml"
 
-# 4. 调试输出 (部署后查看日志确认)
-echo "Heroku assigned PORT: $PORT"
-echo "Final config setting:"
-grep "^port:" config.yaml
-grep "^host:" config.yaml
+# 4. 再次确认一下文件内容 (调试用)
+echo "=== Debug Info ==="
+echo "Heroku PORT: $PORT"
+echo "Checking config file at $HOME/.cli-proxy-api/config.yaml:"
+grep "port:" "$HOME/.cli-proxy-api/config.yaml"
+echo "=================="
 
-# 5. 启动服务
-echo "Starting server..."
+# 5. 启动程序
 exec server
