@@ -283,12 +283,14 @@ func ConvertOpenAIRequestToGeminiCLI(modelName string, inputRawJSON []byte, _ bo
 		}
 	}
 
-	// tools -> request.tools[0].functionDeclarations + request.tools[0].googleSearch passthrough
+	// tools -> request.tools[].functionDeclarations + request.tools[].googleSearch/codeExecution/urlContext passthrough
 	tools := gjson.GetBytes(rawJSON, "tools")
 	if tools.IsArray() && len(tools.Array()) > 0 {
-		toolNode := []byte(`{}`)
-		hasTool := false
+		functionToolNode := []byte(`{}`)
 		hasFunction := false
+		googleSearchNodes := make([][]byte, 0)
+		codeExecutionNodes := make([][]byte, 0)
+		urlContextNodes := make([][]byte, 0)
 		for _, t := range tools.Array() {
 			if t.Get("type").String() == "function" {
 				fn := t.Get("function")
@@ -327,31 +329,63 @@ func ConvertOpenAIRequestToGeminiCLI(modelName string, inputRawJSON []byte, _ bo
 					}
 					fnRaw, _ = sjson.Delete(fnRaw, "strict")
 					if !hasFunction {
-						toolNode, _ = sjson.SetRawBytes(toolNode, "functionDeclarations", []byte("[]"))
+						functionToolNode, _ = sjson.SetRawBytes(functionToolNode, "functionDeclarations", []byte("[]"))
 					}
-					tmp, errSet := sjson.SetRawBytes(toolNode, "functionDeclarations.-1", []byte(fnRaw))
+					tmp, errSet := sjson.SetRawBytes(functionToolNode, "functionDeclarations.-1", []byte(fnRaw))
 					if errSet != nil {
 						log.Warnf("Failed to append tool declaration for '%s': %v", fn.Get("name").String(), errSet)
 						continue
 					}
-					toolNode = tmp
+					functionToolNode = tmp
 					hasFunction = true
-					hasTool = true
 				}
 			}
 			if gs := t.Get("google_search"); gs.Exists() {
+				googleToolNode := []byte(`{}`)
 				var errSet error
-				toolNode, errSet = sjson.SetRawBytes(toolNode, "googleSearch", []byte(gs.Raw))
+				googleToolNode, errSet = sjson.SetRawBytes(googleToolNode, "googleSearch", []byte(gs.Raw))
 				if errSet != nil {
 					log.Warnf("Failed to set googleSearch tool: %v", errSet)
 					continue
 				}
-				hasTool = true
+				googleSearchNodes = append(googleSearchNodes, googleToolNode)
+			}
+			if ce := t.Get("code_execution"); ce.Exists() {
+				codeToolNode := []byte(`{}`)
+				var errSet error
+				codeToolNode, errSet = sjson.SetRawBytes(codeToolNode, "codeExecution", []byte(ce.Raw))
+				if errSet != nil {
+					log.Warnf("Failed to set codeExecution tool: %v", errSet)
+					continue
+				}
+				codeExecutionNodes = append(codeExecutionNodes, codeToolNode)
+			}
+			if uc := t.Get("url_context"); uc.Exists() {
+				urlToolNode := []byte(`{}`)
+				var errSet error
+				urlToolNode, errSet = sjson.SetRawBytes(urlToolNode, "urlContext", []byte(uc.Raw))
+				if errSet != nil {
+					log.Warnf("Failed to set urlContext tool: %v", errSet)
+					continue
+				}
+				urlContextNodes = append(urlContextNodes, urlToolNode)
 			}
 		}
-		if hasTool {
-			out, _ = sjson.SetRawBytes(out, "request.tools", []byte("[]"))
-			out, _ = sjson.SetRawBytes(out, "request.tools.0", toolNode)
+		if hasFunction || len(googleSearchNodes) > 0 || len(codeExecutionNodes) > 0 || len(urlContextNodes) > 0 {
+			toolsNode := []byte("[]")
+			if hasFunction {
+				toolsNode, _ = sjson.SetRawBytes(toolsNode, "-1", functionToolNode)
+			}
+			for _, googleNode := range googleSearchNodes {
+				toolsNode, _ = sjson.SetRawBytes(toolsNode, "-1", googleNode)
+			}
+			for _, codeNode := range codeExecutionNodes {
+				toolsNode, _ = sjson.SetRawBytes(toolsNode, "-1", codeNode)
+			}
+			for _, urlNode := range urlContextNodes {
+				toolsNode, _ = sjson.SetRawBytes(toolsNode, "-1", urlNode)
+			}
+			out, _ = sjson.SetRawBytes(out, "request.tools", toolsNode)
 		}
 	}
 

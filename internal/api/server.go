@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,9 +60,9 @@ type ServerOption func(*serverOptionConfig)
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
 	configDir := filepath.Dir(configPath)
 	if base := util.WritablePath(); base != "" {
-		return logging.NewFileRequestLogger(cfg.RequestLog, filepath.Join(base, "logs"), configDir)
+		return logging.NewFileRequestLogger(cfg.RequestLog, filepath.Join(base, "logs"), configDir, cfg.ErrorLogsMaxFiles)
 	}
-	return logging.NewFileRequestLogger(cfg.RequestLog, "logs", configDir)
+	return logging.NewFileRequestLogger(cfg.RequestLog, "logs", configDir, cfg.ErrorLogsMaxFiles)
 }
 
 // WithMiddleware appends additional Gin middleware during server construction.
@@ -325,6 +326,7 @@ func (s *Server) setupRoutes() {
 		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
+		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 	}
 
 	// Gemini compatible API routes
@@ -495,6 +497,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/logs-max-total-size-mb", s.mgmt.PutLogsMaxTotalSizeMB)
 		mgmt.PATCH("/logs-max-total-size-mb", s.mgmt.PutLogsMaxTotalSizeMB)
 
+		mgmt.GET("/error-logs-max-files", s.mgmt.GetErrorLogsMaxFiles)
+		mgmt.PUT("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
+		mgmt.PATCH("/error-logs-max-files", s.mgmt.PutErrorLogsMaxFiles)
+
 		mgmt.GET("/usage-statistics-enabled", s.mgmt.GetUsageStatisticsEnabled)
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
@@ -607,9 +613,11 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
+		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
+		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
@@ -903,6 +911,15 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 	}
 
+	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {
+		if setter, ok := s.requestLogger.(interface{ SetErrorLogsMaxFiles(int) }); ok {
+			setter.SetErrorLogsMaxFiles(cfg.ErrorLogsMaxFiles)
+		}
+		if oldCfg != nil {
+			log.Debugf("error_logs_max_files updated from %d to %d", oldCfg.ErrorLogsMaxFiles, cfg.ErrorLogsMaxFiles)
+		}
+	}
+
 	if oldCfg == nil || oldCfg.DisableCooling != cfg.DisableCooling {
 		auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 		if oldCfg != nil {
@@ -988,14 +1005,17 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
 	}
 
-	// Notify Amp module of config changes (for model mapping hot-reload)
-	if s.ampModule != nil {
-		log.Debugf("triggering amp module config update")
-		if err := s.ampModule.OnConfigUpdated(cfg); err != nil {
-			log.Errorf("failed to update Amp module config: %v", err)
+	// Notify Amp module only when Amp config has changed.
+	ampConfigChanged := oldCfg == nil || !reflect.DeepEqual(oldCfg.AmpCode, cfg.AmpCode)
+	if ampConfigChanged {
+		if s.ampModule != nil {
+			log.Debugf("triggering amp module config update")
+			if err := s.ampModule.OnConfigUpdated(cfg); err != nil {
+				log.Errorf("failed to update Amp module config: %v", err)
+			}
+		} else {
+			log.Warnf("amp module is nil, skipping config update")
 		}
-	} else {
-		log.Warnf("amp module is nil, skipping config update")
 	}
 
 	// Count client sources from configuration and auth store.

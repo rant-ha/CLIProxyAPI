@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -12,20 +14,22 @@ import (
 // applyPayloadConfigWithRoot behaves like applyPayloadConfig but treats all parameter
 // paths as relative to the provided root path (for example, "request" for Gemini CLI)
 // and restricts matches to the given protocol when supplied. Defaults are checked
-// against the original payload when provided.
-func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string, payload, original []byte) []byte {
+// against the original payload when provided. requestedModel carries the client-visible
+// model name before alias resolution so payload rules can target aliases precisely.
+func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string, payload, original []byte, requestedModel string) []byte {
 	if cfg == nil || len(payload) == 0 {
 		return payload
 	}
 	rules := cfg.Payload
-	if len(rules.Default) == 0 && len(rules.DefaultRaw) == 0 && len(rules.Override) == 0 && len(rules.OverrideRaw) == 0 {
+	if len(rules.Default) == 0 && len(rules.DefaultRaw) == 0 && len(rules.Override) == 0 && len(rules.OverrideRaw) == 0 && len(rules.Filter) == 0 {
 		return payload
 	}
 	model = strings.TrimSpace(model)
-	if model == "" {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if model == "" && requestedModel == "" {
 		return payload
 	}
-	candidates := payloadModelCandidates(cfg, model, protocol)
+	candidates := payloadModelCandidates(model, requestedModel)
 	out := payload
 	source := original
 	if len(source) == 0 {
@@ -35,7 +39,7 @@ func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	// Apply default rules: first write wins per field across all matching rules.
 	for i := range rules.Default {
 		rule := &rules.Default[i]
-		if !payloadRuleMatchesModels(rule, protocol, candidates) {
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
 			continue
 		}
 		for path, value := range rule.Params {
@@ -60,7 +64,7 @@ func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	// Apply default raw rules: first write wins per field across all matching rules.
 	for i := range rules.DefaultRaw {
 		rule := &rules.DefaultRaw[i]
-		if !payloadRuleMatchesModels(rule, protocol, candidates) {
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
 			continue
 		}
 		for path, value := range rule.Params {
@@ -89,7 +93,7 @@ func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	// Apply override rules: last write wins per field across all matching rules.
 	for i := range rules.Override {
 		rule := &rules.Override[i]
-		if !payloadRuleMatchesModels(rule, protocol, candidates) {
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
 			continue
 		}
 		for path, value := range rule.Params {
@@ -107,7 +111,7 @@ func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 	// Apply override raw rules: last write wins per field across all matching rules.
 	for i := range rules.OverrideRaw {
 		rule := &rules.OverrideRaw[i]
-		if !payloadRuleMatchesModels(rule, protocol, candidates) {
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
 			continue
 		}
 		for path, value := range rule.Params {
@@ -126,100 +130,82 @@ func applyPayloadConfigWithRoot(cfg *config.Config, model, protocol, root string
 			out = updated
 		}
 	}
+	// Apply filter rules: remove matching paths from payload.
+	for i := range rules.Filter {
+		rule := &rules.Filter[i]
+		if !payloadModelRulesMatch(rule.Models, protocol, candidates) {
+			continue
+		}
+		for _, path := range rule.Params {
+			fullPath := buildPayloadPath(root, path)
+			if fullPath == "" {
+				continue
+			}
+			updated, errDel := sjson.DeleteBytes(out, fullPath)
+			if errDel != nil {
+				continue
+			}
+			out = updated
+		}
+	}
 	return out
 }
 
-func payloadRuleMatchesModels(rule *config.PayloadRule, protocol string, models []string) bool {
-	if rule == nil || len(models) == 0 {
+func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, models []string) bool {
+	if len(rules) == 0 || len(models) == 0 {
 		return false
 	}
 	for _, model := range models {
-		if payloadRuleMatchesModel(rule, model, protocol) {
-			return true
+		for _, entry := range rules {
+			name := strings.TrimSpace(entry.Name)
+			if name == "" {
+				continue
+			}
+			if ep := strings.TrimSpace(entry.Protocol); ep != "" && protocol != "" && !strings.EqualFold(ep, protocol) {
+				continue
+			}
+			if matchModelPattern(name, model) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func payloadRuleMatchesModel(rule *config.PayloadRule, model, protocol string) bool {
-	if rule == nil {
-		return false
-	}
-	if len(rule.Models) == 0 {
-		return false
-	}
-	for _, entry := range rule.Models {
-		name := strings.TrimSpace(entry.Name)
-		if name == "" {
-			continue
-		}
-		if ep := strings.TrimSpace(entry.Protocol); ep != "" && protocol != "" && !strings.EqualFold(ep, protocol) {
-			continue
-		}
-		if matchModelPattern(name, model) {
-			return true
-		}
-	}
-	return false
-}
-
-func payloadModelCandidates(cfg *config.Config, model, protocol string) []string {
+func payloadModelCandidates(model, requestedModel string) []string {
 	model = strings.TrimSpace(model)
-	if model == "" {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if model == "" && requestedModel == "" {
 		return nil
 	}
-	candidates := []string{model}
-	if cfg == nil {
-		return candidates
-	}
-	aliases := payloadModelAliases(cfg, model, protocol)
-	if len(aliases) == 0 {
-		return candidates
-	}
-	seen := map[string]struct{}{strings.ToLower(model): struct{}{}}
-	for _, alias := range aliases {
-		alias = strings.TrimSpace(alias)
-		if alias == "" {
-			continue
+	candidates := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	addCandidate := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
 		}
-		key := strings.ToLower(alias)
+		key := strings.ToLower(value)
 		if _, ok := seen[key]; ok {
-			continue
+			return
 		}
 		seen[key] = struct{}{}
-		candidates = append(candidates, alias)
+		candidates = append(candidates, value)
+	}
+	if model != "" {
+		addCandidate(model)
+	}
+	if requestedModel != "" {
+		parsed := thinking.ParseSuffix(requestedModel)
+		base := strings.TrimSpace(parsed.ModelName)
+		if base != "" {
+			addCandidate(base)
+		}
+		if parsed.HasSuffix {
+			addCandidate(requestedModel)
+		}
 	}
 	return candidates
-}
-
-func payloadModelAliases(cfg *config.Config, model, protocol string) []string {
-	if cfg == nil {
-		return nil
-	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return nil
-	}
-	channel := strings.ToLower(strings.TrimSpace(protocol))
-	if channel == "" {
-		return nil
-	}
-	entries := cfg.OAuthModelAlias[channel]
-	if len(entries) == 0 {
-		return nil
-	}
-	aliases := make([]string, 0, 2)
-	for _, entry := range entries {
-		if !strings.EqualFold(strings.TrimSpace(entry.Name), model) {
-			continue
-		}
-		alias := strings.TrimSpace(entry.Alias)
-		if alias == "" {
-			continue
-		}
-		aliases = append(aliases, alias)
-	}
-	return aliases
 }
 
 // buildPayloadPath combines an optional root path with a relative parameter path.
@@ -255,6 +241,35 @@ func payloadRawValue(value any) ([]byte, bool) {
 			return nil, false
 		}
 		return raw, true
+	}
+}
+
+func payloadRequestedModel(opts cliproxyexecutor.Options, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	if len(opts.Metadata) == 0 {
+		return fallback
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.RequestedModelMetadataKey]
+	if !ok || raw == nil {
+		return fallback
+	}
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return fallback
+		}
+		return strings.TrimSpace(v)
+	case []byte:
+		if len(v) == 0 {
+			return fallback
+		}
+		trimmed := strings.TrimSpace(string(v))
+		if trimmed == "" {
+			return fallback
+		}
+		return trimmed
+	default:
+		return fallback
 	}
 }
 
