@@ -1,6 +1,6 @@
 # CLI 代理 API
 
-[English](README.md) | 中文
+[English](README.md) | 中文 | [日本語](README_JA.md)
 
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex 兼容 API 接口的代理服务器。
 
@@ -183,7 +183,7 @@ OmniRoute 是一个面向多供应商大语言模型的 AI 网关：它提供兼
 
 ## 写给所有中国网友的
 
-QQ 群：188637136
+QQ 群：188637136（满）、1081218164
 
 或
 
