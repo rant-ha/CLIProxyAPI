@@ -14,6 +14,10 @@ func (s *Server) registerManagementV8Routes() {
 	s.engine.GET(prefix+"/oauth/callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
 	s.engine.POST(prefix+"/oauth/callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
 
+	// Request log dashboard: public shell (prompts for the management key itself),
+	// data APIs below stay behind the management-key middleware.
+	s.engine.GET(prefix+"/observability/request-logs/dashboard", s.managementAvailabilityMiddleware(), s.mgmt.RequestLogDashboard)
+
 	v8 := s.engine.Group(prefix)
 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
 		c.Set(management.ConfigV8ContextKey, true)
@@ -39,6 +43,11 @@ func (s *Server) registerManagementV8Routes() {
 	v8.GET("/observability/logs/requests/:id", s.mgmt.GetRequestLogByID)
 	v8.GET("/observability/usage/api-keys", s.mgmt.GetAPIKeyUsage)
 	v8.GET("/observability/usage/queue", s.mgmt.GetUsageQueue)
+	v8.GET("/observability/request-logs", s.mgmt.ListRequestLogs)
+	v8.GET("/observability/request-logs/stats", s.mgmt.RequestLogStats)
+	v8.GET("/observability/request-logs/config", s.mgmt.GetRequestLogConfig)
+	v8.PUT("/observability/request-logs/config", s.mgmt.PutRequestLogConfig)
+	v8.POST("/observability/request-logs/purge", s.mgmt.PurgeRequestLogs)
 
 	v8.GET("/credentials", s.mgmt.ListAuthFiles)
 	v8.POST("/credentials", s.mgmt.UploadAuthFile)

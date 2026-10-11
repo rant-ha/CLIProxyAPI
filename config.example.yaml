@@ -1111,6 +1111,22 @@ observability:
     # Default: 60. Max: 3600.
     redis-usage-queue-retention-seconds: 60
 
+  request-log:
+    # Persist per-request logs (requested model, REAL upstream model name, tokens,
+    # latency, provider, API key, ...) into a local SQLite database, with a built-in
+    # dashboard at /v8/management/observability/request-logs/dashboard.
+    # Default: false.
+    enabled: false
+
+    # SQLite database file path. Empty = requestlog.db under the writable data directory.
+    # Note: on Heroku the filesystem is ephemeral, so logs survive only until the next
+    # dyno restart unless you point this at a persistent volume.
+    db-path: ""
+
+    # How many days of logs to keep. Older rows are purged automatically.
+    # 0 = keep forever. Default: 30.
+    retention-days: 30
+
   # Enable pprof HTTP debug server (host:port). Keep it bound to localhost for safety.
   pprof:
     enable: false

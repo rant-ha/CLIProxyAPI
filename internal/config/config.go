@@ -75,6 +75,19 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
+	// RequestLogEnabled toggles persistent per-request logging into a local SQLite
+	// database, including the real upstream model name reported by the provider.
+	RequestLogEnabled bool `yaml:"request-log-enabled" json:"request-log-enabled"`
+
+	// RequestLogDBPath overrides the SQLite database file path.
+	// Default: requestlog.db under the writable data directory.
+	RequestLogDBPath string `yaml:"request-log-db-path" json:"request-log-db-path"`
+
+	// RequestLogRetentionDays controls how many days of request logs are kept.
+	// Rows older than this are purged periodically. 0 means keep forever.
+	// Default: 30.
+	RequestLogRetentionDays int `yaml:"request-log-retention-days" json:"request-log-retention-days"`
+
 	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
