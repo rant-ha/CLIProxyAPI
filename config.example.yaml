@@ -1116,7 +1116,7 @@ observability:
     # latency, provider, API key, ...) into a local SQLite database, with a built-in
     # dashboard at /v8/management/observability/request-logs/dashboard.
     # Default: false.
-    enabled: false
+    enabled: true
 
     # SQLite database file path. Empty = requestlog.db under the writable data directory.
     # Note: on Heroku the filesystem is ephemeral, so logs survive only until the next
